@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Ghosted - Don't Get Ghosted</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.ethers.io/lib/ethers-5.7.2.umd.min.js"></script>
+  <script>
+// ============================================================
+// GHOSTED - BLOCKCHAIN HELPERS (EMBEDDED)
+// ============================================================
+const BLOCKCHAIN = {
+  CHAIN_ID: 143,
+  CHAIN_NAME: 'Monad',
+  RPC_URL: 'https://rpc.monad.xyz',
+  GHOST_TOKEN: '0x601CE35D2aD556599F796323c98b25a8d5D17777',
+  CONTRACT_ADDRESS: '0x3Fd512a0599Ea1af5DD6d77A7f46e2262d7B18c9',
+  TOKEN_ABI: [
+    'function balanceOf(address owner) view returns (uint256)',
+    'function allowance(address owner, address spender) view returns (uint256)',
+    'function approve(address spender, uint256 amount) returns (bool)',
+    'function decimals() view returns (uint8)',
+  ],
+  GAME_ABI: [
+    'function joinGame(bytes32 gameId, uint256 stakeAmount) external',
+    'function leaveGame(bytes32 gameId) external',
+    'function isPlayerInGame(bytes32 gameId, address player) view returns (bool)',
+    'function getGame(bytes32 gameId) view returns (uint256 stakeAmount, uint256 totalPool, address[] players, uint8 state, uint256 createdAt)',
+  ],
+};
+
+let provider = null;
+let signer = null;
+let tokenContract = null;
+let gameContract = null;
+let connectedAddress = null;
+
+async function initBlockchain() {
+  if (typeof window.ethereum === 'undefined') {
+    throw new Error('Please install MetaMask or another Web3 wallet');
+  }
+  provider = new ethers.providers.Web3Provider(window.ethereum);
+  const network = await provider.getNetwork();
+  if (network.chainId !== BLOCKCHAIN.CHAIN_ID) {
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x' + BLOCKCHAIN.CHAIN_ID.toString(16) }],
+      });
+    } catch (switchError) {
+      if (switchError.code === 4902) {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: '0x' + BLOCKCHAIN.CHAIN_ID.toString(16),
+            chainName: BLOCKCHAIN.CHAIN_NAME,
+            nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+            rpcUrls: [BLOCKCHAIN.RPC_URL],
+          }],
+        });
+      } else {
+        throw switchError;
+      }
+    }
+    provider = new ethers.providers.Web3Provider(window.ethereum);
+  }
+  return provider;
+}
+
+async function connectWalletReal() {
+  await initBlockchain();
+  const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+  connectedAddress = accounts[0];
+  signer = provider.getSigner();
+  tokenContract = new ethers.Contract(BLOCKCHAIN.GHOST_TOKEN, BLOCKCHAIN.TOKEN_ABI, signer);
+  gameContract = new ethers.Contract(BLOCKCHAIN.CONTRACT_ADDRESS, BLOCKCHAIN.GAME_ABI, signer);
+  return connectedAddress;
+}
+
+async function getGhostBalance(address) {
+  if (!tokenContract) {
+    await initBlockchain();
+    tokenContract = new ethers.Contract(BLOCKCHAIN.GHOST_TOKEN, BLOCKCHAIN.TOKEN_ABI, provider);
+  }
+  const balance = await tokenContract.balanceOf(address || connectedAddress);
+  return Number(ethers.utils.formatEther(balance));
+}
+
+async function checkAllowance(amount) {
+  const allowance = await tokenContract.allowance(connectedAddress, BLOCKCHAIN.CONTRACT_ADDRESS);
+  const amountWei = ethers.utils.parseEther(amount.toString());
+  return allowance.gte(amountWei);
+}
+
+async function approveGhost(amount) {
+  const amountWei = ethers.utils.parseEther(amount.toString());
+  const tx = await tokenContract.approve(BLOCKCHAIN.CONTRACT_ADDRESS, amountWei);
+  const receipt = await tx.wait();
+  return receipt.transactionHash;
+}
+
+async function joinGameOnChain(gameIdBytes32, stakeAmount) {
+  const stakeWei = ethers.utils.parseEther(stakeAmount.toString());
+  const hasAllowance = await checkAllowance(stakeAmount);
+  if (!hasAllowance) {
+    console.log('Approving $GHOST spending...');
+    await approveGhost(stakeAmount);
+  }
+  console.log('Joining game on-chain...');
+  const tx = await gameContract.joinGame(gameIdBytes32, stakeWei);
+  const receipt = await tx.wait();
+  return receipt.transactionHash;
+}
+
+async function leaveGameOnChain(gameIdBytes32) {
+  const tx = await gameContract.leaveGame(gameIdBytes32);
+  const receipt = await tx.wait();
+  return receipt.transactionHash;
+}
+
+async function isPlayerStaked(gameIdBytes32, address) {
+  if (!gameContract) {
+    await initBlockchain();
+    gameContract = new ethers.Contract(BLOCKCHAIN.CONTRACT_ADDRESS, BLOCKCHAIN.GAME_ABI, provider);
+  }
+  return await gameContract.isPlayerInGame(gameIdBytes32, address || connectedAddress);
+}
+
+if (typeof window.ethereum !== 'undefined') {
+  window.ethereum.on('accountsChanged', (accounts) => {
+    if (accounts.length === 0) { connectedAddress = null; signer = null; }
+    else { connectedAddress = accounts[0]; }
+  });
+  window.ethereum.on('chainChanged', () => { window.location.reload(); });
+}
+
+window.BlockchainHelpers = {
+  connectWallet: connectWalletReal,
+  getGhostBalance,
+  checkAllowance,
+  approveGhost,
+  joinGameOnChain,
+  leaveGameOnChain,
+  isPlayerStaked,
+  getAddress: () => connectedAddress,
+  BLOCKCHAIN,
+};
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow-x: hidden; }
+    .touch-none { touch-action: none; }
+    
+    @keyframes float {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-20px) rotate(5deg); }
+    }
+    @keyframes pulse-glow {
+      0%, 100% { filter: drop-shadow(0 0 20px rgba(168, 85, 247, 0.5)); }
+      50% { filter: drop-shadow(0 0 40px rgba(168, 85, 247, 0.8)); }
+    }
+    @keyframes shimmer {
+      0% { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    @keyframes spooky-float {
+      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.6; }
+      25% { transform: translate(10px, -15px) scale(1.05); opacity: 0.8; }
+      50% { transform: translate(-5px, -25px) scale(1); opacity: 0.6; }
+      75% { transform: translate(-15px, -10px) scale(0.95); opacity: 0.7; }
+    }
+    @keyframes countdown-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+    }
+    .animate-float { animation: float 4s ease-in-out infinite; }
+    .animate-pulse-glow { animation: pulse-glow 3s ease-in-out infinite; }
+    .animate-spooky { animation: spooky-float 8s ease-in-out infinite; }
+    .animate-countdown { animation: countdown-pulse 1s ease-in-out infinite; }
+    .shimmer-text {
+      background: linear-gradient(90deg, #fff 0%, #a855f7 25%, #fff 50%, #06b6d4 75%, #fff 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer 4s linear infinite;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    // ==================== CONFIG ====================
+    const CONFIG = {
+      SERVER_URL: 'wss://ghosted-server.onrender.com',
+      MAP_WIDTH: 960,
+      MAP_HEIGHT: 680,
+      PLAYER_SIZE: 30,
+      VISION_RADIUS: 180,
+      REAPER_KILL_RANGE: 35,
+      REPORT_RANGE: 60,
+      STAKE_TIERS: [
+        { amount: 25000, label: '25K GHOST' },
+        { amount: 100000, label: '100K GHOST' },
+        { amount: 500000, label: '500K GHOST' },
+        { amount: 2500000, label: '2.5M GHOST' },
+      ],
+      SOCIAL_LINKS: {
+        twitter: 'https://x.com/YourGameHandle',
+        telegram: 'https://t.me/YourGameGroup',
+        buyGhost: 'https://yourlink.com/buy-ghost',
+        ghostProtocol: 'https://yourlink.com/ghost-protocol',
+      },
+    };
+
+    // ==================== MAP DATA (MATCHES SERVER) ====================
+    const MAP_WALLS = [
+      // Outer walls
+      { x: 0, y: 0, w: 960, h: 28 },
+      { x: 0, y: 652, w: 960, h: 28 },
+      { x: 0, y: 0, w: 28, h: 680 },
+      { x: 932, y: 0, w: 28, h: 680 },
+      // Left vertical wall with doorways
+      { x: 240, y: 28, w: 20, h: 180 },
+      { x: 240, y: 268, w: 20, h: 180 },
+      { x: 240, y: 508, w: 20, h: 144 },
+      // Middle vertical wall with doorways  
+      { x: 480, y: 28, w: 20, h: 140 },
+      { x: 480, y: 228, w: 20, h: 140 },
+      { x: 480, y: 428, w: 20, h: 224 },
+      // Right vertical wall with doorways (gap at top for access)
+      { x: 720, y: 28, w: 20, h: 120 },
+      { x: 720, y: 208, w: 20, h: 444 },
+      // Horizontal walls
+      { x: 100, y: 340, w: 120, h: 20 },
+      { x: 280, y: 180, w: 120, h: 20 },
+      { x: 520, y: 340, w: 120, h: 20 },
+      { x: 340, y: 480, w: 120, h: 20 },
+      { x: 800, y: 180, w: 110, h: 20 },
+      { x: 800, y: 420, w: 110, h: 20 },
+    ];
+
+    const SOUL_WELLS = [
+      { x: 130, y: 140, name: 'Vestibule' },
+      { x: 840, y: 100, name: 'Gallery' },
+      { x: 130, y: 580, name: 'Dungeon' },
+      { x: 840, y: 580, name: 'Crypt' },
+      { x: 360, y: 380, name: 'Grand Hall' },
+      { x: 600, y: 160, name: 'Library' },
+    ];
+
+    const DECORATIONS = [
+      { x: 60, y: 60, type: 'candle' },
+      { x: 900, y: 60, type: 'candle' },
+      { x: 60, y: 620, type: 'candle' },
+      { x: 900, y: 620, type: 'candle' },
+    ];
+
+    // ==================== UTILS ====================
+    const distance = (a, b) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+    const formatGhost = (amount) => {
+      if (amount >= 1000000) return (amount / 1000000).toFixed(1) + 'M';
+      if (amount >= 1000) return (amount / 1000).toFixed(0) + 'K';
+      return amount.toString();
+    };
+    const isMobile = () => /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
+
+    // ==================== FLOATING GHOST ====================
+    const FloatingGhost = ({ style, delay = 0, size = 40, color = '#a855f7' }) => (
+      <div className="absolute pointer-events-none animate-spooky" style={{ ...style, animationDelay: `${delay}s` }}>
+        <svg width={size} height={size} viewBox="0 0 32 32">
+          <path d={`M 4 30 Q 4 8, 16 2 Q 28 8, 28 30 Q 24 26, 20 30 Q 16 24, 12 30 Q 8 26, 4 30 Z`} fill={color} opacity="0.6" />
+          <ellipse cx="11" cy="12" rx="3" ry="4" fill="white" opacity="0.9" />
+          <ellipse cx="21" cy="12" rx="3" ry="4" fill="white" opacity="0.9" />
+          <circle cx="12" cy="13" r="1.5" fill="#1a1a2e" />
+          <circle cx="22" cy="13" r="1.5" fill="#1a1a2e" />
+        </svg>
+      </div>
+    );
+
+    // ==================== ANIMATED SOUL ====================
+    const AnimatedSoul = ({ style, delay = 0 }) => (
+      <div className="absolute pointer-events-none animate-float" style={{ ...style, animationDelay: `${delay}s` }}>
+        <div className="w-4 h-4 rounded-full bg-cyan-400 opacity-60 blur-sm" />
+        <div className="absolute top-1 left-1 w-2 h-2 rounded-full bg-white opacity-80" />
+      </div>
+    );
+
+    // ==================== SOCIAL ICONS ====================
+    const TwitterIcon = () => (
+      <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+      </svg>
+    );
+
+    const TelegramIcon = () => (
+      <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
+      </svg>
+    );
+
+    // ==================== VIRTUAL JOYSTICK ====================
+    const VirtualJoystick = ({ onMove, onStop }) => {
+      const [touching, setTouching] = useState(false);
+      const [stickPos, setStickPos] = useState({ x: 0, y: 0 });
+      const baseRef = useRef(null);
+      const baseSize = 120;
+      const stickSize = 50;
+
+      const handleTouch = (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const rect = baseRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        let dx = touch.clientX - centerX;
+        let dy = touch.clientY - centerY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const maxDist = baseSize / 2 - stickSize / 2;
+        if (dist > maxDist) { dx = (dx / dist) * maxDist; dy = (dy / dist) * maxDist; }
+        setStickPos({ x: dx, y: dy });
+        setTouching(true);
+        const normDist = Math.min(dist, maxDist) / maxDist;
+        if (normDist > 0.1) onMove(dx / maxDist, dy / maxDist);
+        else onStop();
+      };
+      const handleTouchEnd = () => { setTouching(false); setStickPos({ x: 0, y: 0 }); onStop(); };
+
+      return (
+        <div ref={baseRef} className="relative select-none touch-none" style={{ width: baseSize, height: baseSize }}
+          onTouchStart={handleTouch} onTouchMove={handleTouch} onTouchEnd={handleTouchEnd}>
+          <div className="absolute rounded-full bg-white/10 border-2 border-white/30" style={{ width: baseSize, height: baseSize }} />
+          <div className={`absolute rounded-full ${touching ? 'bg-purple-500' : 'bg-white/40'} transition-colors`}
+            style={{ width: stickSize, height: stickSize, left: baseSize/2 - stickSize/2 + stickPos.x, top: baseSize/2 - stickSize/2 + stickPos.y }} />
+        </div>
+      );
+    };
+
+    // ==================== ACTION BUTTON ====================
+    const ActionButton = ({ icon, label, onClick, disabled, color = 'purple', size = 'normal' }) => {
+      const sizeClasses = size === 'large' ? 'w-20 h-20 text-3xl' : 'w-16 h-16 text-2xl';
+      const colorClasses = {
+        purple: 'bg-purple-600 active:bg-purple-500',
+        red: 'bg-red-600 active:bg-red-500',
+        amber: 'bg-amber-600 active:bg-amber-500',
+        gray: 'bg-gray-600',
+      };
+      return (
+        <button onClick={onClick} disabled={disabled}
+          className={`${sizeClasses} ${colorClasses[color]} rounded-full flex flex-col items-center justify-center 
+            disabled:opacity-40 shadow-lg select-none touch-none text-white font-bold`}>
+          <span>{icon}</span>
+          {label && <span className="text-xs mt-0.5">{label}</span>}
+        </button>
+      );
+    };
+
+    // ==================== COUNTDOWN OVERLAY ====================
+    const CountdownOverlay = ({ seconds, title, subtitle }) => (
+      <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
+        <div className="text-center space-y-4">
+          <h2 className="text-2xl font-bold text-purple-400">{title}</h2>
+          <div className="text-9xl font-black text-white animate-countdown">{Math.ceil(seconds)}</div>
+          {subtitle && <p className="text-gray-400 text-lg">{subtitle}</p>}
+        </div>
+      </div>
+    );
+
+    // ==================== SPRITES ====================
+    const GhostSprite = ({ x, y, color, name, isPlayer, isAI, opacity = 1 }) => {
+      const s = 32, cx = x + s/2;
+      return (
+        <g opacity={opacity}>
+          <ellipse cx={cx} cy={y+s+4} rx={12} ry={4} fill="rgba(0,0,0,0.4)" />
+          <circle cx={cx} cy={y+s/2} r={s*1.2} fill={color} opacity="0.15" />
+          <path d={`M ${x+4} ${y+s-2} Q ${x+4} ${y+8}, ${x+s/2} ${y+2} Q ${x+s-4} ${y+8}, ${x+s-4} ${y+s-2} 
+                    Q ${x+s-8} ${y+s-6}, ${x+s-12} ${y+s} Q ${x+s/2} ${y+s-8}, ${x+12} ${y+s} Q ${x+8} ${y+s-6}, ${x+4} ${y+s-2} Z`}
+            fill={color} stroke={isPlayer ? "#fff" : "rgba(255,255,255,0.3)"} strokeWidth={isPlayer ? 2.5 : 1} />
+          <ellipse cx={x+11} cy={y+12} rx={4} ry={5} fill="#fff" />
+          <ellipse cx={x+21} cy={y+12} rx={4} ry={5} fill="#fff" />
+          <circle cx={x+12} cy={y+13} r={2} fill="#1a1a2e" />
+          <circle cx={x+22} cy={y+13} r={2} fill="#1a1a2e" />
+          <g>
+            <rect x={cx - name.length * 3.5 - 6} y={y - 16} width={name.length * 7 + 12 + (isAI ? 12 : 0)} height={14} rx={3} fill="rgba(0,0,0,0.75)" />
+            <text x={cx} y={y - 5} textAnchor="middle" fill="#fff" fontSize="9" fontWeight="600">{name}</text>
+            {isAI && <text x={cx + name.length * 3.5 + 3} y={y - 4} fill="#888" fontSize="7">🤖</text>}
+          </g>
+        </g>
+      );
+    };
+
+    const BodySprite = ({ x, y, color, playerName }) => (
+      <g>
+        <circle cx={x} cy={y} r={25} fill={color} opacity="0.25">
+          <animate attributeName="opacity" values="0.2;0.4;0.2" dur="2s" repeatCount="indefinite" />
+        </circle>
+        <ellipse cx={x} cy={y} rx={16} ry={10} fill={color} opacity="0.5" />
+        <text x={x} y={y+5} textAnchor="middle" fontSize="18">☠️</text>
+        <text x={x} y={y+28} textAnchor="middle" fill="#ff6b6b" fontSize="9" fontWeight="bold">{playerName}</text>
+      </g>
+    );
+
+    const SoulFragment = ({ x, y, charged, visible }) => {
+      if (!visible) return null;
+      const r = charged ? 10 : 6;
+      return (
+        <g>
+          <circle cx={x} cy={y} r={r * 2.5} fill={charged ? '#FFD700' : '#00FFD1'} opacity="0.15" />
+          <circle cx={x} cy={y} r={r} fill={charged ? '#FFF7CC' : '#CCFFF5'}>
+            <animate attributeName="r" values={`${r*0.9};${r*1.1};${r*0.9}`} dur="1.5s" repeatCount="indefinite" />
+          </circle>
+        </g>
+      );
+    };
+
+    const Candle = ({ x, y }) => (
+      <g>
+        <rect x={x-3} y={y+5} width={6} height={14} fill="#5D4E37" rx="1" />
+        <circle cx={x} cy={y-3} r={20} fill="#FFB347" opacity="0.12" />
+        <ellipse cx={x} cy={y} rx={3} ry={6} fill="#FF9933" />
+      </g>
+    );
+
+    // ==================== TUTORIAL COMPONENT ====================
+    const Tutorial = () => {
+      const [activeTab, setActiveTab] = useState('ghost');
+      
+      return (
+        <div className="bg-slate-900/90 backdrop-blur border border-purple-500/30 rounded-2xl p-6">
+          <h3 className="text-2xl font-bold text-center mb-6 shimmer-text">📖 How to Play</h3>
+          
+          <div className="flex gap-2 mb-6">
+            <button onClick={() => setActiveTab('ghost')}
+              className={`flex-1 py-3 rounded-xl font-bold transition-all ${activeTab === 'ghost' ? 'bg-cyan-600 text-white' : 'bg-slate-700/50 text-gray-400 hover:bg-slate-700'}`}>
+              👻 Ghost
+            </button>
+            <button onClick={() => setActiveTab('reaper')}
+              className={`flex-1 py-3 rounded-xl font-bold transition-all ${activeTab === 'reaper' ? 'bg-red-600 text-white' : 'bg-slate-700/50 text-gray-400 hover:bg-slate-700'}`}>
+              ☠️ Reaper
+            </button>
+            <button onClick={() => setActiveTab('controls')}
+              className={`flex-1 py-3 rounded-xl font-bold transition-all ${activeTab === 'controls' ? 'bg-purple-600 text-white' : 'bg-slate-700/50 text-gray-400 hover:bg-slate-700'}`}>
+              🎮 Controls
+            </button>
+          </div>
+          
+          <div className="min-h-[200px]">
+            {activeTab === 'ghost' && (
+              <div className="space-y-4">
+                <div className="flex items-start gap-4 p-4 bg-slate-800/50 rounded-xl">
+                  <span className="text-3xl">🎯</span>
+                  <div>
+                    <h4 className="font-bold text-cyan-400">Your Goal</h4>
+                    <p className="text-gray-300 text-sm">Collect 20 spirit orbs to escape, OR vote out the Reaper!</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 bg-slate-800/50 rounded-xl">
+                  <span className="text-3xl">👁️</span>
+                  <div>
+                    <h4 className="font-bold text-cyan-400">Limited Vision</h4>
+                    <p className="text-gray-300 text-sm">You can only see nearby. The Reaper could be anywhere!</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 bg-slate-800/50 rounded-xl">
+                  <span className="text-3xl">🚨</span>
+                  <div>
+                    <h4 className="font-bold text-cyan-400">Report Bodies</h4>
+                    <p className="text-gray-300 text-sm">Find a body? Report it to call a Séance and vote!</p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {activeTab === 'reaper' && (
+              <div className="space-y-4">
+                <div className="flex items-start gap-4 p-4 bg-slate-800/50 rounded-xl">
+                  <span className="text-3xl">🎯</span>
+                  <div>
+                    <h4 className="font-bold text-red-400">Your Goal</h4>
+                    <p className="text-gray-300 text-sm">Eliminate all ghosts before they escape or vote you out!</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 bg-slate-800/50 rounded-xl">
+                  <span className="text-3xl">🎭</span>
+                  <div>
+                    <h4 className="font-bold text-red-400">Blend In</h4>
+                    <p className="text-gray-300 text-sm">Collect orbs to blend in. Deceive during discussions!</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 bg-slate-800/50 rounded-xl">
+                  <span className="text-3xl">🗣️</span>
+                  <div>
+                    <h4 className="font-bold text-red-400">Self-Report</h4>
+                    <p className="text-gray-300 text-sm">Kill and report the body yourself to seem innocent!</p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {activeTab === 'controls' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-800/50 rounded-xl">
+                  <h4 className="font-bold text-purple-400 mb-3">🖥️ Desktop</h4>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <kbd className="px-2 py-1 bg-slate-700 rounded font-mono">WASD</kbd>
+                      <span className="text-gray-300">Move</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <kbd className="px-2 py-1 bg-slate-700 rounded font-mono">R</kbd>
+                      <span className="text-gray-300">Report</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <kbd className="px-2 py-1 bg-slate-700 rounded font-mono">M</kbd>
+                      <span className="text-gray-300">Emergency</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <kbd className="px-2 py-1 bg-slate-700 rounded font-mono">Space</kbd>
+                      <span className="text-gray-300">Kill</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-4 bg-slate-800/50 rounded-xl">
+                  <h4 className="font-bold text-purple-400 mb-3">📱 Mobile</h4>
+                  <p className="text-sm text-gray-300">Left: Joystick • Right: Action buttons</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // ==================== MAIN APP ====================
+    function App() {
+      const [mobile, setMobile] = useState(false);
+      const [connectionState, setConnectionState] = useState('disconnected');
+      const wsRef = useRef(null);
+      const [walletConnected, setWalletConnected] = useState(false);
+      const [walletAddress, setWalletAddress] = useState('');
+      const [ghostBalance, setGhostBalance] = useState(0);
+      const [playerName, setPlayerName] = useState('');
+      const [stakeAmount, setStakeAmount] = useState(25000);
+      const [lobbies, setLobbies] = useState([]);
+      const [inLobby, setInLobby] = useState(false);
+      const [lobbyPlayers, setLobbyPlayers] = useState([]);
+      const [isHost, setIsHost] = useState(false);
+      const [lobbyData, setLobbyData] = useState(null);
+      const [hasStaked, setHasStaked] = useState(false);
+      const [stakingInProgress, setStakingInProgress] = useState(false);
+      const [stakeTxHash, setStakeTxHash] = useState(null);
+      const myPlayerIdRef = useRef(null);
+      const [gamePhase, setGamePhase] = useState(null);
+      const [timer, setTimer] = useState(0);
+      const [myPlayer, setMyPlayer] = useState(null);
+      const [players, setPlayers] = useState([]);
+      const [fragments, setFragments] = useState([]);
+      const [bodies, setBodies] = useState([]);
+      const [reportedBody, setReportedBody] = useState(null);
+      const [meetingCaller, setMeetingCaller] = useState(null);
+      const [gameResult, setGameResult] = useState(null);
+      const [ejectionData, setEjectionData] = useState(null);
+      const [chatMessages, setChatMessages] = useState([]);
+      const [deadChatMessages, setDeadChatMessages] = useState([]);
+      const [chatInput, setChatInput] = useState('');
+      const chatEndRef = useRef(null);
+      const [myVote, setMyVote] = useState(null);
+      const [canvasScale, setCanvasScale] = useState(1);
+      const [showTutorial, setShowTutorial] = useState(false);
+      
+      // Input state
+      const keysRef = useRef({});
+      const moveRef = useRef({ dx: 0, dy: 0 });
+      const animFrameRef = useRef(null);
+      const lastSendRef = useRef(0);
+
+      useEffect(() => {
+        setMobile(isMobile());
+        const handleResize = () => { setMobile(isMobile()); updateCanvasScale(); };
+        window.addEventListener('resize', handleResize);
+        updateCanvasScale();
+        return () => window.removeEventListener('resize', handleResize);
+      }, []);
+
+      const updateCanvasScale = () => {
+        const maxWidth = window.innerWidth - 32;
+        const maxHeight = window.innerHeight - (isMobile() ? 220 : 120);
+        setCanvasScale(Math.min(maxWidth / CONFIG.MAP_WIDTH, maxHeight / CONFIG.MAP_HEIGHT, 1));
+      };
+
+      useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages, deadChatMessages]);
+
+      const connectWallet = async () => {
+        try {
+          const address = await window.BlockchainHelpers.connectWallet();
+          setWalletAddress(address);
+          const balance = await window.BlockchainHelpers.getGhostBalance(address);
+          setGhostBalance(balance);
+          setWalletConnected(true);
+        } catch (error) {
+          console.error('Wallet connection failed:', error);
+          alert('Failed to connect wallet: ' + error.message);
+        }
+      };
+
+      const disconnectWallet = () => {
+        setWalletConnected(false);
+        setWalletAddress('');
+        setGhostBalance(0);
+        setPlayerName('');
+      };
+
+      const connectToServer = useCallback(() => {
+        if (wsRef.current) wsRef.current.close();
+        setConnectionState('connecting');
+        const socket = new WebSocket(CONFIG.SERVER_URL);
+        wsRef.current = socket;
+        socket.onopen = () => { setConnectionState('connected'); socket.send(JSON.stringify({ type: 'get_lobbies' })); };
+        socket.onclose = () => { setConnectionState('disconnected'); wsRef.current = null; setInLobby(false); setGamePhase(null); };
+        socket.onerror = () => setConnectionState('error');
+        socket.onmessage = (e) => handleServerMessage(JSON.parse(e.data));
+      }, []);
+
+      const handleServerMessage = (msg) => {
+        switch (msg.type) {
+          case 'lobby_list': setLobbies(msg.lobbies || []); break;
+          case 'lobby_created': 
+            setInLobby(true); 
+            myPlayerIdRef.current = msg.playerId;
+            setIsHost(true);
+            // Store blockchain data for staking
+            window.currentGameIdBytes32 = msg.gameIdBytes32;
+            window.currentStakeAmountWei = msg.stakeAmountWei;
+            window.contractAddress = msg.contractAddress;
+            break;
+          case 'lobby_joined': 
+            setInLobby(true); 
+            myPlayerIdRef.current = msg.playerId;
+            // Store blockchain data for staking
+            window.currentGameIdBytes32 = msg.gameIdBytes32;
+            window.currentStakeAmountWei = msg.stakeAmountWei;
+            window.contractAddress = msg.contractAddress;
+            break;
+          case 'lobby_update':
+            setLobbyPlayers(msg.players || []);
+            setLobbyData(msg.lobby);
+            // Check if current player is the host
+            if (myPlayerIdRef.current) {
+              setIsHost(msg.hostId === myPlayerIdRef.current);
+            }
+            break;
+          case 'game_starting': setInLobby(false); setGamePhase('starting'); break;
+          case 'phase_change':
+            setGamePhase(msg.phase);
+            setTimer(msg.duration);
+            if (msg.reportedBody) setReportedBody(msg.reportedBody);
+            if (msg.meetingCaller) setMeetingCaller(msg.meetingCaller);
+            if (msg.phase === 'ejection') {
+              setEjectionData(msg.ejection); // null means no one voted out
+            }
+            if (msg.phase === 'haunt') { 
+              setReportedBody(null); 
+              setChatMessages([]); 
+              setDeadChatMessages([]); 
+              setMyVote(null); 
+              setMeetingCaller(null);
+              setEjectionData(null);
+            }
+            break;
+          case 'game_state':
+            setGamePhase(msg.phase); 
+            setTimer(msg.timer); 
+            setMyPlayer(msg.you);
+            setPlayers(msg.players || []); 
+            setFragments(msg.fragments || []); 
+            setBodies(msg.bodies || []);
+            break;
+          case 'body_reported': setReportedBody(msg.body); break;
+          case 'emergency_meeting': setMeetingCaller({ name: msg.caller, type: 'emergency' }); break;
+          case 'chat_message': setChatMessages(prev => [...prev.slice(-100), msg]); break;
+          case 'dead_chat_message': setDeadChatMessages(prev => [...prev.slice(-100), msg]); break;
+          case 'game_over': setGamePhase('gameover'); setGameResult(msg); break;
+          case 'error': alert(msg.message); break;
+        }
+      };
+
+      const sendToServer = useCallback((data) => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify(data));
+        }
+      }, []);
+
+      const createLobby = () => {
+        if (!wsRef.current || !walletConnected || !playerName.trim()) return;
+        sendToServer({ type: 'create_lobby', address: walletAddress, name: playerName.trim().slice(0, 12), stakeAmount });
+        setGhostBalance(prev => prev - stakeAmount);
+      };
+
+      const joinLobby = (id) => {
+        if (!wsRef.current || !walletConnected || !playerName.trim()) return;
+        const lobby = lobbies.find(l => l.id === id);
+        if (lobby) setStakeAmount(lobby.stakeAmount);
+        sendToServer({ type: 'join_lobby', address: walletAddress, name: playerName.trim().slice(0, 12), lobbyId: id });
+        setGhostBalance(prev => prev - (lobby?.stakeAmount || stakeAmount));
+      };
+
+      const leaveLobby = () => { 
+        sendToServer({ type: 'leave_lobby' }); 
+        setInLobby(false); 
+        setIsHost(false);
+        setHasStaked(false);
+        setStakeTxHash(null);
+        myPlayerIdRef.current = null;
+        setGhostBalance(prev => prev + stakeAmount); 
+      };
+      
+      const stakeGhost = async () => {
+        if (!window.BlockchainHelpers || !window.currentGameIdBytes32) {
+          alert('Blockchain not initialized');
+          return;
+        }
+        
+        setStakingInProgress(true);
+        try {
+          const txHash = await window.BlockchainHelpers.joinGameOnChain(
+            window.currentGameIdBytes32,
+            stakeAmount
+          );
+          setStakeTxHash(txHash);
+          setHasStaked(true);
+          // Notify server that we've staked
+          sendToServer({ type: 'confirm_stake', txHash });
+        } catch (error) {
+          console.error('Staking failed:', error);
+          alert('Staking failed: ' + error.message);
+        } finally {
+          setStakingInProgress(false);
+        }
+      };
+      
+      const startGame = () => { if (isHost) sendToServer({ type: 'start_game' }); };
+      const refreshLobbies = () => { sendToServer({ type: 'get_lobbies' }); };
+
+      const handleJoystickMove = (dx, dy) => { moveRef.current = { dx, dy }; };
+      const handleJoystickStop = () => { moveRef.current = { dx: 0, dy: 0 }; };
+
+      // Keyboard controls
+      useEffect(() => {
+        if (mobile) return;
+        const down = (e) => {
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+          const k = e.key.toLowerCase();
+          if (['w','a','s','d',' '].includes(k)) {
+            e.preventDefault();
+            keysRef.current[k] = true;
+          }
+          if (k === 'r' && gamePhase === 'haunt') {
+            sendToServer({ type: 'game_input', input: { type: 'report' } });
+          }
+          if (k === 'm' && gamePhase === 'haunt' && myPlayer?.emergencyMeetingsLeft > 0) {
+            sendToServer({ type: 'game_input', input: { type: 'emergency_meeting' } });
+          }
+        };
+        const up = (e) => {
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+          const k = e.key.toLowerCase();
+          if (['w','a','s','d',' '].includes(k)) keysRef.current[k] = false;
+        };
+        window.addEventListener('keydown', down);
+        window.addEventListener('keyup', up);
+        return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+      }, [mobile, gamePhase, myPlayer, sendToServer]);
+
+      // Game loop using requestAnimationFrame for smooth input
+      useEffect(() => {
+        if (gamePhase !== 'haunt' || !myPlayer?.alive) {
+          if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+          return;
+        }
+
+        const gameLoop = (timestamp) => {
+          // Send input every 33ms (30 times per second)
+          if (timestamp - lastSendRef.current >= 33) {
+            lastSendRef.current = timestamp;
+            
+            let dx = 0, dy = 0;
+            if (mobile) {
+              dx = moveRef.current.dx;
+              dy = moveRef.current.dy;
+            } else {
+              const k = keysRef.current;
+              if (k['w']) dy -= 1;
+              if (k['s']) dy += 1;
+              if (k['a']) dx -= 1;
+              if (k['d']) dx += 1;
+            }
+
+            if (dx !== 0 || dy !== 0) {
+              sendToServer({ type: 'game_input', input: { type: 'move', dx, dy } });
+            } else {
+              sendToServer({ type: 'game_input', input: { type: 'stop' } });
+            }
+
+            // Handle kill
+            if (!mobile && keysRef.current[' '] && myPlayer?.isReaper) {
+              sendToServer({ type: 'game_input', input: { type: 'reaper_kill' } });
+              keysRef.current[' '] = false;
+            }
+          }
+
+          animFrameRef.current = requestAnimationFrame(gameLoop);
+        };
+
+        animFrameRef.current = requestAnimationFrame(gameLoop);
+        
+        return () => {
+          if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+        };
+      }, [gamePhase, myPlayer?.alive, myPlayer?.isReaper, mobile, sendToServer]);
+
+      const handleReport = () => sendToServer({ type: 'game_input', input: { type: 'report' } });
+      const handleEmergency = () => sendToServer({ type: 'game_input', input: { type: 'emergency_meeting' } });
+      const handleKill = () => sendToServer({ type: 'game_input', input: { type: 'reaper_kill' } });
+      const castVote = (targetId) => { 
+        if (!myVote && myPlayer?.alive) { 
+          setMyVote(targetId); 
+          sendToServer({ type: 'game_input', input: { type: 'vote', targetId } }); 
+        } 
+      };
+      const sendChat = () => { 
+        if (chatInput.trim() && gamePhase === 'seance') { 
+          sendToServer({ type: 'game_input', input: { type: 'chat', message: chatInput.trim() } }); 
+          setChatInput(''); 
+        } 
+      };
+
+      const visible = (obj) => {
+        // Dead players can see everything
+        if (!myPlayer || gamePhase === 'seance' || gamePhase === 'gameover' || !myPlayer.alive) return { vis: true, op: 1 };
+        const d = distance({ x: myPlayer.x + 15, y: myPlayer.y + 15 }, { x: (obj.x || 0) + 15, y: (obj.y || 0) + 15 });
+        return { vis: d <= CONFIG.VISION_RADIUS * 1.2, op: clamp(1 - (d - CONFIG.VISION_RADIUS * 0.6) / (CONFIG.VISION_RADIUS * 0.6), 0.1, 1) };
+      };
+
+      const visiblePlayers = useMemo(() => players.map(p => ({ ...p, ...visible(p) })), [myPlayer?.x, myPlayer?.y, players, gamePhase]);
+      const visibleFragments = useMemo(() => fragments.map(f => ({ ...f, visible: visible(f).vis })), [myPlayer?.x, myPlayer?.y, fragments, gamePhase]);
+      const visibleBodies = useMemo(() => bodies.map(b => ({ ...b, ...visible(b) })).filter(b => b.vis), [myPlayer?.x, myPlayer?.y, bodies, gamePhase]);
+      const nearBody = useMemo(() => myPlayer?.alive && !myPlayer?.isReaper && bodies.some(b => distance({ x: myPlayer.x + 15, y: myPlayer.y + 15 }, b) < CONFIG.REPORT_RANGE), [myPlayer, bodies]);
+      const canKill = useMemo(() => myPlayer?.alive && myPlayer?.isReaper && myPlayer?.killCooldown <= 0 && players.some(p => p.alive && !p.isReaper && distance(myPlayer, p) < CONFIG.REAPER_KILL_RANGE), [myPlayer, players]);
+
+      const scaledWidth = CONFIG.MAP_WIDTH * canvasScale;
+      const scaledHeight = CONFIG.MAP_HEIGHT * canvasScale;
+      const formatTimer = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+
+      // ==================== MENU ====================
+      if (!gamePhase && !inLobby) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 text-white overflow-hidden relative">
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+              <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600/20 rounded-full blur-3xl animate-pulse" />
+              <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-cyan-600/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
+              <FloatingGhost style={{ top: '10%', left: '5%' }} delay={0} size={50} color="#a855f7" />
+              <FloatingGhost style={{ top: '20%', right: '10%' }} delay={1.5} size={35} color="#06b6d4" />
+              <FloatingGhost style={{ bottom: '30%', left: '8%' }} delay={3} size={45} color="#ec4899" />
+              <AnimatedSoul style={{ top: '15%', left: '20%' }} delay={0} />
+              <AnimatedSoul style={{ bottom: '20%', left: '30%' }} delay={2} />
+            </div>
+
+            <div className="relative z-10 p-4 md:p-8 min-h-screen flex flex-col">
+              <div className="max-w-4xl mx-auto space-y-6 flex-1 flex flex-col justify-center">
+                {connectionState !== 'connected' && (
+                  <div className="flex-1 flex flex-col items-center justify-center -mt-20">
+                    <div className="text-center mb-8">
+                      <div className="animate-pulse-glow inline-block">
+                        <h1 className="text-5xl md:text-7xl font-black shimmer-text tracking-tight">GHOSTED</h1>
+                      </div>
+                      <p className="text-purple-300/80 mt-3 text-lg md:text-xl font-medium">👻 Don't Get Ghosted 👻</p>
+                      <p className="text-gray-400 mt-1 text-sm">Find the Reaper. Trust no one. Escape the manor.</p>
+                      
+                      <div className="flex items-center justify-center gap-2 mt-6">
+                        <div className={`w-3 h-3 rounded-full ${connectionState === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-gray-500'}`} />
+                        <span className={`text-sm font-medium ${connectionState === 'connecting' ? 'text-yellow-400' : 'text-gray-400'}`}>
+                          {connectionState === 'connecting' ? '🟡 Connecting...' : '🔴 Disconnected'}
+                        </span>
+                      </div>
+                    </div>
+                    <button onClick={connectToServer} disabled={connectionState === 'connecting'}
+                      className="px-10 py-4 bg-gradient-to-r from-purple-600 via-purple-500 to-cyan-500 hover:from-purple-500 hover:via-purple-400 hover:to-cyan-400 disabled:from-gray-700 disabled:to-gray-700 rounded-2xl font-bold text-white text-lg transform hover:scale-105 transition-all shadow-lg shadow-purple-500/30">
+                      {connectionState === 'connecting' ? '⏳ Connecting...' : '🔌 Connect to Server'}
+                    </button>
+                  </div>
+                )}
+
+                {connectionState === 'connected' && (
+                  <>
+                    <div className="text-center">
+                      <div className="animate-pulse-glow inline-block">
+                        <h1 className="text-5xl md:text-7xl font-black shimmer-text tracking-tight">GHOSTED</h1>
+                      </div>
+                      <p className="text-purple-300/80 mt-3 text-lg md:text-xl font-medium">👻 Don't Get Ghosted 👻</p>
+                      <p className="text-gray-400 mt-1 text-sm">Find the Reaper. Trust no one. Escape the manor.</p>
+                      
+                      <div className="flex items-center justify-center gap-2 mt-6">
+                        <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse" />
+                        <span className="text-sm font-medium text-green-400">🟢 Connected</span>
+                      </div>
+                    </div>
+                    
+                    <div className="text-center">
+                      <button onClick={() => setShowTutorial(!showTutorial)}
+                        className="px-6 py-2 bg-slate-800/80 hover:bg-slate-700/80 border border-purple-500/30 rounded-full text-sm font-medium text-purple-300 transition-all">
+                        {showTutorial ? '✕ Hide Tutorial' : '📖 How to Play'}
+                      </button>
+                    </div>
+
+                    {showTutorial && <Tutorial />}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+                      <div className="bg-slate-900/80 backdrop-blur border border-purple-500/30 rounded-2xl p-5 md:p-6 transform hover:scale-[1.02] transition-all duration-300 shadow-xl shadow-purple-500/10">
+                        <h2 className="text-xl font-bold text-purple-400 mb-4 flex items-center gap-2">
+                          <span className="text-2xl">👤</span> Your Profile
+                        </h2>
+                        
+                        {!walletConnected ? (
+                          <button onClick={connectWallet}
+                            className="w-full py-4 bg-gradient-to-r from-purple-600 via-pink-500 to-cyan-500 hover:from-purple-500 hover:via-pink-400 hover:to-cyan-400 rounded-xl font-bold text-white text-lg transform hover:scale-105 transition-all shadow-lg shadow-purple-500/30">
+                            🔗 Connect Wallet
+                          </button>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="flex justify-between items-center p-3 bg-slate-800/50 rounded-xl">
+                              <div>
+                                <span className="text-gray-400 text-xs block">Wallet</span>
+                                <span className="font-mono text-cyan-400 text-sm">{walletAddress.slice(0,6)}...{walletAddress.slice(-4)}</span>
+                              </div>
+                              <button onClick={disconnectWallet} className="px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 text-xs font-semibold rounded-lg transition-all">
+                                Disconnect
+                              </button>
+                            </div>
+                            
+                            <div className="flex justify-between items-center p-3 bg-slate-800/50 rounded-xl">
+                              <span className="text-gray-400">$GHOST Balance</span>
+                              <span className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">{formatGhost(ghostBalance)}</span>
+                            </div>
+                            
+                            <input type="text" placeholder="Enter your name..." value={playerName} onChange={(e) => setPlayerName(e.target.value.slice(0,12))}
+                              className="w-full px-4 py-3 bg-slate-800/80 border border-slate-600 hover:border-purple-500/50 focus:border-purple-500 rounded-xl text-white placeholder-gray-500 transition-all focus:ring-2 focus:ring-purple-500/30 outline-none" maxLength={12} />
+                            
+                            <div>
+                              <span className="text-gray-400 text-sm block mb-3">💰 Stake Amount</span>
+                              <div className="grid grid-cols-2 gap-2">
+                                {CONFIG.STAKE_TIERS.map(tier => (
+                                  <button key={tier.amount} onClick={() => setStakeAmount(tier.amount)} disabled={ghostBalance < tier.amount}
+                                    className={`p-3 rounded-xl text-sm font-semibold flex items-center justify-center transform hover:scale-105 transition-all duration-200
+                                      ${stakeAmount === tier.amount ? 'bg-gradient-to-r from-purple-600 to-purple-500 ring-2 ring-purple-400 shadow-lg shadow-purple-500/30' : 'bg-slate-700/80 hover:bg-slate-600/80 border border-slate-600'} 
+                                      ${ghostBalance < tier.amount ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                                    <span>{tier.label}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            
+                            <button onClick={createLobby} disabled={!playerName.trim()}
+                              className="w-full py-4 bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 disabled:from-gray-700 disabled:to-gray-700 rounded-xl font-bold text-lg text-white transform hover:scale-105 disabled:hover:scale-100 transition-all duration-300 shadow-lg shadow-green-500/30 disabled:shadow-none">
+                              ➕ Create Lobby
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="bg-slate-900/80 backdrop-blur border border-cyan-500/30 rounded-2xl p-5 md:p-6 transform hover:scale-[1.02] transition-all duration-300 shadow-xl shadow-cyan-500/10">
+                        <div className="flex justify-between items-center mb-4">
+                          <h2 className="text-xl font-bold text-cyan-400 flex items-center gap-2"><span className="text-2xl">🎮</span> Open Lobbies</h2>
+                          <button onClick={refreshLobbies} className="p-2 bg-slate-700/80 hover:bg-slate-600/80 rounded-lg transition-all hover:rotate-180 duration-500">🔄</button>
+                        </div>
+                        
+                        {lobbies.length === 0 ? (
+                          <div className="text-center py-12">
+                            <div className="text-6xl mb-4 animate-float">👻</div>
+                            <p className="text-gray-400">No open lobbies yet...</p>
+                            <p className="text-gray-500 text-sm mt-1">Create one!</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-3 max-h-72 overflow-y-auto pr-2">
+                            {lobbies.map(lobby => (
+                              <div key={lobby.id} className="bg-slate-800/80 border border-slate-700 hover:border-cyan-500/50 rounded-xl p-4 transition-all duration-200">
+                                <div className="flex justify-between items-start mb-2">
+                                  <div>
+                                    <h3 className="font-semibold text-white">{lobby.name}</h3>
+                                    <p className="text-xs text-gray-500">Host: {lobby.hostName}</p>
+                                  </div>
+                                  <span className="px-3 py-1 bg-amber-500/20 text-amber-400 rounded-lg text-xs font-bold">{formatGhost(lobby.stakeAmount)} 👻</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-sm text-gray-400">{lobby.playerCount}/{lobby.maxPlayers}</span>
+                                  <button onClick={() => joinLobby(lobby.id)} disabled={!playerName.trim() || !walletConnected || ghostBalance < lobby.stakeAmount}
+                                    className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 rounded-lg text-sm font-semibold transition-all transform hover:scale-105">
+                                    Join →
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <footer className="mt-8 pt-6 border-t border-slate-800">
+                <div className="max-w-4xl mx-auto text-center space-y-4">
+                  <div className="flex flex-wrap items-center justify-center gap-4">
+                    <a href={CONFIG.SOCIAL_LINKS.twitter} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-2 bg-slate-800/80 hover:bg-slate-700/80 rounded-xl transition-all hover:scale-105 text-gray-300 hover:text-white">
+                      <TwitterIcon /><span className="text-sm font-medium">Follow on X</span>
+                    </a>
+                    <a href={CONFIG.SOCIAL_LINKS.telegram} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-2 bg-slate-800/80 hover:bg-slate-700/80 rounded-xl transition-all hover:scale-105 text-gray-300 hover:text-white">
+                      <TelegramIcon /><span className="text-sm font-medium">Join Telegram</span>
+                    </a>
+                    <a href={CONFIG.SOCIAL_LINKS.buyGhost} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600/80 to-cyan-600/80 hover:from-purple-500/80 hover:to-cyan-500/80 rounded-xl transition-all hover:scale-105 text-white">
+                      <span className="text-lg">👻</span><span className="text-sm font-medium">Buy $GHOST</span>
+                    </a>
+                    <a href={CONFIG.SOCIAL_LINKS.ghostProtocol} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-2 bg-slate-800/80 hover:bg-slate-700/80 rounded-xl transition-all hover:scale-105 text-gray-300 hover:text-white">
+                      <span className="text-lg">🔮</span><span className="text-sm font-medium">Ghost Protocol</span>
+                    </a>
+                  </div>
+                  <p className="text-gray-600 text-xs">Powered by $GHOST Token • 10% Treasury Fee</p>
+                </div>
+              </footer>
+            </div>
+          </div>
+        );
+      }
+
+      // ==================== LOBBY ====================
+      if (inLobby && !gamePhase) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 text-white flex items-center justify-center p-4 relative overflow-hidden">
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+              <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600/20 rounded-full blur-3xl animate-pulse" />
+              <FloatingGhost style={{ top: '10%', left: '5%' }} delay={0} size={40} />
+            </div>
+            
+            <div className="relative z-10 bg-slate-900/90 backdrop-blur border border-purple-500/30 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl shadow-purple-500/20">
+              <div className="text-center mb-2"><span className="text-4xl animate-float inline-block">👻</span></div>
+              <h2 className="text-2xl font-bold text-center mb-1">{lobbyData?.name || 'Lobby'}</h2>
+              <p className="text-center text-amber-400 font-bold mb-6">{formatGhost(lobbyData?.stakeAmount || stakeAmount)} $GHOST</p>
+              
+              <div className="space-y-2 mb-6">
+                {lobbyPlayers.map((p, i) => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-slate-800/80 rounded-xl border border-slate-700">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl" style={{ backgroundColor: p.color }}>👻</div>
+                    <span className="font-semibold flex-1">{p.name}</span>
+                    {p.isHost && <span className="text-xs bg-purple-600 px-2 py-1 rounded-full font-bold">HOST</span>}
+                    {p.isAI && <span className="text-xs bg-slate-600 px-2 py-1 rounded-full">🤖</span>}
+                  </div>
+                ))}
+              </div>
+              
+              <p className="text-center text-gray-400 text-sm mb-4">{lobbyPlayers.length} player{lobbyPlayers.length !== 1 ? 's' : ''} • AI fills remaining</p>
+              
+              {/* Staking Section */}
+              <div className="mb-4 p-4 bg-slate-800/60 rounded-xl border border-amber-500/30">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-amber-400 font-semibold">💰 Stake Status</span>
+                  {hasStaked ? (
+                    <span className="text-green-400 text-sm">✓ Staked</span>
+                  ) : (
+                    <span className="text-yellow-400 text-sm">Pending</span>
+                  )}
+                </div>
+                
+                {!hasStaked && (
+                  <button 
+                    onClick={stakeGhost} 
+                    disabled={stakingInProgress}
+                    className="w-full py-3 bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 hover:to-orange-400 disabled:from-gray-600 disabled:to-gray-600 rounded-xl font-bold transition-all transform hover:scale-105 disabled:hover:scale-100"
+                  >
+                    {stakingInProgress ? '⏳ Staking...' : `💎 Stake ${formatGhost(stakeAmount)} $GHOST`}
+                  </button>
+                )}
+                
+                {stakeTxHash && (
+                  <p className="text-xs text-gray-400 mt-2 truncate">
+                    TX: {stakeTxHash.slice(0, 10)}...{stakeTxHash.slice(-8)}
+                  </p>
+                )}
+              </div>
+              
+              {isHost ? (
+                <button onClick={startGame} className="w-full py-4 bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 rounded-xl font-bold text-lg mb-3 transform hover:scale-105 transition-all shadow-lg shadow-green-500/30">
+                  🎮 Start Game
+                </button>
+              ) : (
+                <div className="text-center text-yellow-400 mb-3 py-4 bg-yellow-500/10 rounded-xl border border-yellow-500/30">
+                  <span className="animate-pulse">⏳ Waiting for host...</span>
+                </div>
+              )}
+              
+              <button onClick={leaveLobby} className="w-full py-3 bg-slate-700/80 hover:bg-slate-600/80 rounded-xl font-semibold transition-all">← Leave Lobby</button>
+            </div>
+          </div>
+        );
+      }
+
+      // ==================== GAME ====================
+      if (gamePhase) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 text-white flex flex-col">
+            <div className="flex justify-between items-start p-2 gap-2">
+              <div className="bg-black/80 backdrop-blur rounded-xl px-4 py-2 border border-slate-700">
+                <div className="text-xs font-bold">
+                  {gamePhase === 'starting' && <span className="text-yellow-400">⏳ STARTING</span>}
+                  {gamePhase === 'haunt' && <span className="text-purple-400">👻 HAUNT</span>}
+                  {gamePhase === 'report' && <span className="text-red-400">🚨 REPORTED</span>}
+                  {gamePhase === 'seance' && <span className="text-cyan-400">🕯️ SÉANCE</span>}
+                  {gamePhase === 'ejection' && <span className="text-orange-400">⚖️ EJECTION</span>}
+                  {gamePhase === 'gameover' && <span className="text-yellow-400">✨ GAME OVER</span>}
+                </div>
+                <div className="text-2xl font-mono font-bold">{formatTimer(timer)}</div>
+              </div>
+              <div className="bg-black/80 backdrop-blur rounded-xl px-4 py-2 text-right border border-slate-700">
+                {myPlayer?.isReaper ? (
+                  <>
+                    <div className="text-red-500 font-bold text-sm">☠️ REAPER</div>
+                    <div className="text-xs text-gray-400">Orbs: {myPlayer?.fragments}</div>
+                    {myPlayer?.killCooldown > 0 && <div className="text-xs text-red-400">CD: {Math.ceil(myPlayer.killCooldown)}s</div>}
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xs text-cyan-400">Orbs</div>
+                    <div className="text-xl font-bold text-cyan-400">{myPlayer?.fragments || 0}/20</div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 flex items-center justify-center px-2">
+              <svg width={scaledWidth} height={scaledHeight} viewBox={`0 0 ${CONFIG.MAP_WIDTH} ${CONFIG.MAP_HEIGHT}`}
+                className="rounded-xl shadow-2xl border border-slate-800" style={{ background: '#0a0a12' }}>
+                <defs>
+                  <radialGradient id="vis"><stop offset="0%" stopColor="white" /><stop offset="100%" stopColor="white" stopOpacity="0" /></radialGradient>
+                  <mask id="fog">
+                    <rect width="100%" height="100%" fill="#222" />
+                    {myPlayer && <circle cx={myPlayer.x+15} cy={myPlayer.y+15} r={CONFIG.VISION_RADIUS} fill="url(#vis)" />}
+                    {DECORATIONS.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={40} fill="white" opacity="0.1" />)}
+                  </mask>
+                </defs>
+                {Array(15).fill(0).map((_, i) => Array(11).fill(0).map((_, j) => (
+                  <rect key={`${i}-${j}`} x={i*64} y={j*64} width={64} height={64} fill={(i+j)%2 ? '#0c0c14' : '#0a0a10'} />
+                )))}
+                <g mask={gamePhase === 'haunt' && myPlayer?.alive ? "url(#fog)" : undefined}>
+                  {SOUL_WELLS.map((w, i) => <circle key={i} cx={w.x} cy={w.y} r={35} fill="none" stroke="#6B5B95" strokeWidth="2" strokeDasharray="5 3" opacity="0.4" />)}
+                  {DECORATIONS.map((d, i) => <Candle key={i} x={d.x} y={d.y} />)}
+                  {MAP_WALLS.map((w, i) => <rect key={i} x={w.x} y={w.y} width={w.w} height={w.h} fill="#1a1520" stroke="#2a2035" />)}
+                  {visibleFragments.map(f => <SoulFragment key={f.id} {...f} />)}
+                  {visibleBodies.map(b => <BodySprite key={b.id} x={b.x} y={b.y} color={b.color} playerName={b.playerName} />)}
+                  {visiblePlayers.filter(p => p.alive && p.vis && p.id !== myPlayer?.id).map(p => (
+                    <GhostSprite key={p.id} x={p.x} y={p.y} color={p.color} name={p.name} isAI={p.isAI} opacity={p.op} />
+                  ))}
+                  {myPlayer?.alive && <GhostSprite x={myPlayer.x} y={myPlayer.y} color={myPlayer.isReaper ? '#DC2626' : myPlayer.color} name="You" isPlayer />}
+                  {myPlayer && !myPlayer.alive && <GhostSprite x={myPlayer.x} y={myPlayer.y} color={myPlayer.color} name="You (Dead)" isPlayer opacity={0.4} />}
+                  {myPlayer?.isReaper && myPlayer?.alive && gamePhase === 'haunt' && (
+                    <circle cx={myPlayer.x+15} cy={myPlayer.y+15} r={CONFIG.REAPER_KILL_RANGE} fill="none" stroke={myPlayer.killCooldown > 0 ? "#666" : "#dc2626"} strokeWidth="2" strokeDasharray="5 3" opacity="0.5" />
+                  )}
+                </g>
+              </svg>
+            </div>
+
+            {mobile && gamePhase === 'haunt' && myPlayer?.alive && (
+              <div className="flex justify-between items-end p-4 pb-6">
+                <VirtualJoystick onMove={handleJoystickMove} onStop={handleJoystickStop} />
+                <div className="flex flex-col items-center gap-3">
+                  {myPlayer?.isReaper ? (
+                    <ActionButton icon="☠️" label="KILL" onClick={handleKill} disabled={!canKill} color={canKill ? 'red' : 'gray'} size="large" />
+                  ) : (
+                    <>
+                      <ActionButton icon="🚨" label="REPORT" onClick={handleReport} disabled={!nearBody} color={nearBody ? 'red' : 'gray'} />
+                      {myPlayer?.emergencyMeetingsLeft > 0 && (
+                        <ActionButton icon="🔔" label={`MTG (${myPlayer.emergencyMeetingsLeft})`} onClick={handleEmergency} color="amber" />
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Spectator mode for dead players */}
+            {gamePhase === 'haunt' && myPlayer && !myPlayer.alive && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur px-6 py-3 rounded-xl border border-gray-600">
+                <p className="text-gray-400 text-center">👻 You were eliminated • Spectating</p>
+              </div>
+            )}
+
+            {gamePhase === 'starting' && timer > 0 && (
+              <CountdownOverlay seconds={timer} title="Game Starting!"
+                subtitle={myPlayer?.isReaper ? "☠️ You are the REAPER!" : "👻 You are a GHOST!"} />
+            )}
+
+            {gamePhase === 'report' && (
+              <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
+                <div className="text-center space-y-4">
+                  <div className="text-7xl animate-countdown">{reportedBody ? '🚨' : '🔔'}</div>
+                  <h2 className="text-4xl font-black text-red-400">{reportedBody ? 'BODY REPORTED!' : 'EMERGENCY!'}</h2>
+                  {reportedBody && <p className="text-xl text-gray-300">{reportedBody.playerName} was found</p>}
+                  <p className="text-purple-400 text-lg">Séance in {Math.ceil(timer)}...</p>
+                </div>
+              </div>
+            )}
+
+            {gamePhase === 'seance' && (
+              <div className="absolute inset-0 bg-black/90 flex items-center justify-center p-2 z-50 overflow-y-auto">
+                <div className="bg-gradient-to-b from-slate-800 to-slate-900 border border-purple-500/50 rounded-xl p-4 w-full max-w-2xl max-h-full overflow-y-auto shadow-2xl">
+                  <div className="text-center mb-4">
+                    <h2 className="text-2xl font-bold text-purple-400">🕯️ THE SÉANCE</h2>
+                    {reportedBody && <p className="text-red-400">{reportedBody.playerName} was eliminated</p>}
+                    <div className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-red-600/20 border border-red-500/50 rounded-xl">
+                      <span className="text-red-400 font-bold">⏱️ Voting ends:</span>
+                      <span className={`text-2xl font-mono font-black ${timer <= 10 ? 'text-red-500 animate-pulse' : 'text-white'}`}>{formatTimer(timer)}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="flex flex-col">
+                      <h3 className="text-sm font-bold text-gray-400 mb-2">💬 {myPlayer?.alive ? 'Discussion' : 'Dead Chat 👻'}</h3>
+                      <div className="flex-1 bg-slate-800/60 rounded-lg p-3 h-40 overflow-y-auto text-sm space-y-1">
+                        {(myPlayer?.alive ? chatMessages : deadChatMessages).length === 0 && <p className="text-gray-500 italic text-xs">Start chatting...</p>}
+                        {(myPlayer?.alive ? chatMessages : deadChatMessages).map((msg, i) => (
+                          <p key={i}><span className="font-semibold" style={{ color: msg.playerColor }}>{msg.playerName}:</span> <span className="text-gray-300">{msg.message}</span></p>
+                        ))}
+                        <div ref={chatEndRef} />
+                      </div>
+                      <div className="flex gap-2 mt-2">
+                        <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+                          placeholder="Type..." className="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm text-white" maxLength={200} />
+                        <button onClick={sendChat} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-semibold transition-all">Send</button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col">
+                      <h3 className="text-sm font-bold text-gray-400 mb-2">🗳️ Vote to Banish</h3>
+                      <div className="flex-1 overflow-y-auto space-y-2">
+                        {players.filter(p => p.alive && p.id !== myPlayer?.id).map(p => (
+                          <button key={p.id} onClick={() => castVote(p.id)} disabled={!!myVote || !myPlayer?.alive}
+                            className={`w-full px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-all
+                              ${myVote === p.id ? 'bg-purple-600 ring-2 ring-purple-400' : myVote ? 'bg-slate-800/50 opacity-50' : 'bg-slate-700 hover:bg-slate-600'}`}>
+                            <div className="w-6 h-6 rounded-full" style={{ backgroundColor: p.color }} />
+                            <span className="flex-1 text-left font-semibold">{p.name}</span>
+                            {p.isAI && <span className="text-xs text-gray-500">🤖</span>}
+                            <span className="text-cyan-400 text-xs">{p.fragments}👻</span>
+                          </button>
+                        ))}
+                        <button onClick={() => castVote('skip')} disabled={!!myVote || !myPlayer?.alive}
+                          className={`w-full px-3 py-2 rounded-lg text-sm transition-all ${myVote === 'skip' ? 'bg-slate-600' : 'bg-slate-700/50 hover:bg-slate-600'}`}>Skip</button>
+                      </div>
+                      {myVote && <p className="text-center text-green-400 text-sm mt-2">✓ Vote cast!</p>}
+                      {!myPlayer?.alive && <p className="text-center text-gray-500 text-xs mt-2">👻 Spectating</p>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* EJECTION ANIMATION SCREEN */}
+            {gamePhase === 'ejection' && (
+              <div className="absolute inset-0 bg-gradient-to-b from-slate-950 via-purple-950 to-black flex items-center justify-center p-4 z-50 overflow-hidden">
+                {/* Stars background */}
+                <div className="absolute inset-0">
+                  {Array.from({ length: 50 }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="absolute w-1 h-1 bg-white rounded-full animate-pulse"
+                      style={{
+                        left: `${Math.random() * 100}%`,
+                        top: `${Math.random() * 100}%`,
+                        animationDelay: `${Math.random() * 2}s`,
+                        opacity: Math.random() * 0.8 + 0.2,
+                      }}
+                    />
+                  ))}
+                </div>
+                
+                <div className="text-center space-y-8 relative z-10">
+                  {ejectionData ? (
+                    <>
+                      {/* Ejected ghost animation */}
+                      <div className="relative h-40 flex items-center justify-center">
+                        <div 
+                          className="text-8xl"
+                          style={{
+                            animation: 'ejectFloat 5s ease-in-out forwards',
+                            color: ejectionData.playerColor,
+                          }}
+                        >
+                          👻
+                        </div>
+                      </div>
+                      
+                      {/* Ejection text */}
+                      <div className="space-y-4">
+                        <h2 className="text-3xl md:text-5xl font-black text-white animate-pulse">
+                          {ejectionData.playerName} was banished.
+                        </h2>
+                        <p className="text-xl md:text-2xl font-bold" style={{
+                          color: ejectionData.wasReaper ? '#22c55e' : '#ef4444',
+                          textShadow: ejectionData.wasReaper ? '0 0 20px #22c55e' : '0 0 20px #ef4444',
+                        }}>
+                          {ejectionData.wasReaper 
+                            ? '☠️ They WERE the Reaper! ☠️' 
+                            : '👻 They were NOT the Reaper.'}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* No one ejected animation */}
+                      <div className="relative h-40 flex items-center justify-center">
+                        <div className="text-6xl md:text-8xl animate-bounce">🤷</div>
+                      </div>
+                      
+                      <div className="space-y-4">
+                        <h2 className="text-3xl md:text-5xl font-black text-gray-300">
+                          No one was banished.
+                        </h2>
+                        <p className="text-xl md:text-2xl text-gray-500">
+                          (Skipped)
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  
+                  {/* Timer */}
+                  <div className="text-gray-500 text-lg">
+                    Returning to game in {Math.ceil(timer)}...
+                  </div>
+                </div>
+                
+                {/* CSS Animation for ejection */}
+                <style>{`
+                  @keyframes ejectFloat {
+                    0% { transform: translateX(0) translateY(0) rotate(0deg) scale(1); opacity: 1; }
+                    30% { transform: translateX(50px) translateY(-20px) rotate(15deg) scale(1.1); }
+                    100% { transform: translateX(400px) translateY(-200px) rotate(360deg) scale(0.3); opacity: 0; }
+                  }
+                `}</style>
+              </div>
+            )}
+
+            {gamePhase === 'gameover' && gameResult && (
+              <div className="absolute inset-0 bg-black/95 flex items-center justify-center p-4 z-50">
+                <div className="text-center space-y-6">
+                  <div className="text-7xl animate-float">
+                    {gameResult.winner?.type === 'escape' && '🌟'}
+                    {gameResult.winner?.type === 'ghosts_win' && '🎉'}
+                    {gameResult.winner?.type === 'reaper_wins' && '☠️'}
+                    {gameResult.winner?.type === 'draw' && '🤝'}
+                  </div>
+                  <h2 className="text-4xl font-black">
+                    {gameResult.winner?.type === 'escape' && <span className="text-cyan-400">{gameResult.winner.playerName} ESCAPED!</span>}
+                    {gameResult.winner?.type === 'ghosts_win' && <span className="text-green-400">GHOSTS WIN!</span>}
+                    {gameResult.winner?.type === 'reaper_wins' && <span className="text-red-400">REAPER WINS!</span>}
+                    {gameResult.winner?.type === 'draw' && <span className="text-gray-400">DRAW</span>}
+                  </h2>
+                  <p className="text-gray-400 text-lg">The Reaper was: <span className="text-red-400 font-bold">{gameResult.reaperName}</span></p>
+                  {gameResult.refunds?.length > 0 && <p className="text-yellow-400">💰 Stakes refunded</p>}
+                  {gameResult.winners?.map((w, i) => (
+                    <p key={i} className="text-green-400 font-bold text-lg">🏆 {players.find(p => p.id === w.id)?.name}: +{formatGhost(w.amount)} $GHOST</p>
+                  ))}
+                  <button onClick={() => {
+                    setGamePhase(null); setGameResult(null); setMyPlayer(null); setPlayers([]); setBodies([]);
+                    setChatMessages([]); setDeadChatMessages([]);
+                    const myWin = gameResult.winners?.find(w => w.id === myPlayer?.id);
+                    const myRefund = gameResult.refunds?.find(r => r.id === myPlayer?.id);
+                    if (myWin) setGhostBalance(prev => prev + myWin.amount);
+                    if (myRefund) setGhostBalance(prev => prev + myRefund.amount);
+                    sendToServer({ type: 'get_lobbies' });
+                  }} className="px-12 py-4 bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 rounded-xl text-xl font-bold transform hover:scale-105 transition-all shadow-lg shadow-purple-500/30">
+                    Continue
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      return null;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
